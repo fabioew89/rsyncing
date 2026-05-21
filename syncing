@@ -1,0 +1,128 @@
+#!/usr/bin/env sh
+
+set -eu
+
+DEFAULT_TO="fabio@home.fabio.eti.br:/home/fabio/toshiba/jellyfin/Medias"
+DEFAULT_SSH_PORT="40822"
+DEFAULT_SSH_KEY="~/.ssh/ubuntu"
+
+usage() {
+  cat <<-EOF
+Usage: syncing [OPTIONS]
+  --dry-run         show what would be transferred without sending files
+  --to DEST         remote destination, e.g. user@host:/path
+  --from DIR        source directory (defaults to current working dir)
+  --port PORT       SSH port (default: $DEFAULT_SSH_PORT)
+  --key PATH        SSH private key (default: $DEFAULT_SSH_KEY)
+  --help            show this help message
+
+Configuration files loaded automatically, when present:
+  ./.env, then ./.syncing.env
+
+You can also use environment variables:
+  TO, FROM, SSH_PORT, SSH_KEY
+  SYNCING_TO, SYNCING_SSH_PORT, SYNCING_SSH_KEY, SYNCING_ENV_FILE
+EOF
+}
+
+expand_path() {
+  case "$1" in
+    ~|~/*)
+      printf '%s\n' "$HOME${1#~}"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+load_env_file() {
+  if [ -f "$1" ]; then
+    set -a
+    . "$1"
+    set +a
+  fi
+}
+
+if [ -n "${SYNCING_ENV_FILE:-}" ]; then
+  load_env_file "$(expand_path "$SYNCING_ENV_FILE")"
+else
+  load_env_file ".env"
+  load_env_file ".syncing.env"
+fi
+
+FROM="${FROM:-$(pwd)/}"
+TO="${TO:-${SYNCING_TO:-$DEFAULT_TO}}"
+SSH_PORT="${SSH_PORT:-${SYNCING_SSH_PORT:-$DEFAULT_SSH_PORT}}"
+SSH_KEY="${SSH_KEY:-${SYNCING_SSH_KEY:-$DEFAULT_SSH_KEY}}"
+DRY_RUN=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --to)
+      if [ "$#" -lt 2 ]; then
+        echo "Missing value for --to" >&2
+        usage
+        exit 1
+      fi
+      TO="$2"
+      shift 2
+      ;;
+    --from)
+      if [ "$#" -lt 2 ]; then
+        echo "Missing value for --from" >&2
+        usage
+        exit 1
+      fi
+      FROM="$2"
+      shift 2
+      ;;
+    --port)
+      if [ "$#" -lt 2 ]; then
+        echo "Missing value for --port" >&2
+        usage
+        exit 1
+      fi
+      SSH_PORT="$2"
+      shift 2
+      ;;
+    --key)
+      if [ "$#" -lt 2 ]; then
+        echo "Missing value for --key" >&2
+        usage
+        exit 1
+      fi
+      SSH_KEY="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [ -z "$TO" ]; then
+  echo "Destination is not set. Use TO=... or --to ..." >&2
+  echo "Example: TO='user@host:/remote/path' syncing" >&2
+  exit 1
+fi
+
+SSH_KEY="$(expand_path "$SSH_KEY")"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  set -- -vah --progress --partial --delete --dry-run
+else
+  set -- -vah --progress --partial --delete
+fi
+
+exec rsync "$@" -e "ssh -p $SSH_PORT -i $SSH_KEY" "$FROM" "$TO"
